@@ -29,7 +29,7 @@ Do not add frameworks (Next.js, NestJS, ORMs, state libraries, UI kits, CSS fram
 
 1. **The client never calls Fake Store.** The frontend only calls `/api/*` on our backend.
 2. **Ports and adapters in the backend:**
-   - `ports/ProductRepository.ts`: `getAll()`, `getById(id)`, `getCategories()`. Returns our domain `Product` (`id` is a `string`).
+   - `ports/ProductRepository.ts`: `find(query)` (filters, search, sort, pagination → `Page<Product>`), `getById(id)`, `getByIds(ids)`, `getCategories()`. Returns our domain `Product` (`id` is a `string`). Listing always goes through `find`: never load the whole catalogue into a service. Sources without server-side querying (Fake Store) use `adapters/inMemoryQuery.ts`; a DB adapter translates the same `ProductQuery` to SQL.
    - `ports/EmailProvider.ts`: `send({ to, replyTo, subject, text, html })`.
    - Only `adapters/` may know about Fake Store or SMTP. Services depend on ports, never on adapters.
 3. **Single wiring point:** `createApp({ productRepo, emailProvider, config })` in `app.ts`. `server.ts` passes real adapters; tests pass fakes. No module-level singletons for adapters.
@@ -55,7 +55,8 @@ Do not add frameworks (Next.js, NestJS, ORMs, state libraries, UI kits, CSS fram
 
 ## 7. Workflow
 
-- Work on branch `feat/product-catalogue`; the PR into `main` stays open. Commit in small, meaningful steps.
+- **Never run git commands that change state** (commit, push, branch, merge, rebase, reset). The project owner manages git. Read-only commands (`status`, `diff`, `log`) are fine.
+- Docker (phase 5) starts only after the backend and frontend each run and work on their own with `npm run dev`.
 - Follow the phase order in `docs/PLAN.md` §11. Update the **Status** table below when a phase starts or finishes.
 - When the AI (you) gets something wrong and it is caught, or a prompt meaningfully shapes the solution, add an entry to `AI_USAGE.md`.
 - When an assumption or cut changes, update `DECISIONS.md` in the same change.
@@ -66,9 +67,9 @@ Do not add frameworks (Next.js, NestJS, ORMs, state libraries, UI kits, CSS fram
 | Phase (PLAN §11) | Status | Notes |
 | :--- | :--- | :--- |
 | 0. Planning (plan, AGENTS.md, docs skeletons) | Done | `docs/PLAN.md`, `AGENTS.md`, `CLAUDE.md`, `DECISIONS.md`, `AI_USAGE.md` created. No code yet; git repo not yet initialised. |
-| 1. Setup & guardrails | Not started | |
-| 2. Backend | Not started | |
-| 3. Backend tests | Not started | |
-| 4. Frontend | Not started | |
-| 5. Docker | Not started | |
-| 6. Review & docs, open PR | Not started | |
+| 1. Setup & guardrails | Done | Git on `main` (docs) → branch `feat/product-catalogue`. Backend skeleton (`config.ts`, `createApp`, error middleware, typed errors, 4 tests) and frontend skeleton (Vite + router + `theme.css` + `/api` proxy) both run locally via `npm run dev`. `.env.example` at repo root. |
+| 2. Backend | Done | Domain (`product.ts`, `enquiry.ts` schema, `errors.ts`), ports, `FakeStoreRepository` (cache, stale/snapshot fallback, response validation), `SmtpEmailProvider`, `CatalogService`, `EnquiryService`, routes, wiring in `app.ts`/`server.ts`. All endpoints checked live with curl. |
+| 3. Backend tests | Done | 64 tests in 7 files (`config`, `CatalogService`, `inMemoryQuery`, `EnquiryService`, `FakeStoreRepository`, `SmtpEmailProvider`, `api`), all offline via fakes in `__tests__/fakes.ts`. |
+| 4. Frontend | Done | `api/client.ts`, hooks (`useApi` with abort, `useProducts`, `useEnquiry`), props-only components, pages (Home, Category, Search, ProductDetail with inline enquiry, NotFound), `styles.css` using `theme.css` tokens. 5 RTL tests for the enquiry flow. Checked in a browser against the running API. |
+| 5. Docker | Done | `backend/Dockerfile`, `frontend/Dockerfile` + `nginx.conf`, `docker-compose.yml` (`web` :8080 with the API behind nginx at `/api`, `mailpit` :8025/:1025; the API port is not published). Runs with one command, no `.env` needed (`.env.example` defaults). Verified: pages, SPA routes, API via nginx, enquiry email received in Mailpit with correct to/reply-to, per-client rate limit through nginx (`TRUST_PROXY=1`). |
+| 6. Review & docs, open PR | Docs done; PR not opened | README written; PLAN, DECISIONS, AI_USAGE and this file brought in line with the code. Independent audit run in a fresh session; its findings are resolved. Next: owner records time spent and opens the PR. |

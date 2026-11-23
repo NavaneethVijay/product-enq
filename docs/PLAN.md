@@ -34,7 +34,8 @@ Shortlisted candidates get a 45-minute follow-up to walk through the submission 
 ### In scope / out of scope (summary)
 
 * **In scope:** React web client, Node/Express API, the 5 acceptance criteria (Home, Category, Search, Product page, Enquiry), Docker Compose local run, backend tests, the required docs.
-* **Out of scope:** database, auth/admin UI, cart/checkout/payments, user accounts, pagination, native mobile app, deployed infrastructure, rate limiting/CAPTCHA, i18n. These are documented as cuts or next steps (§8, §13), not built.
+* **Deliberate extensions beyond the ACs** (each protects a predicted change or the enquiry email channel; see `DECISIONS.md`): filter/sort/pagination in the product port and API with no UI (data-source change), enquiry rate limit + honeypot (every enquiry sends a real email), SMTP credentials config (email-provider change).
+* **Out of scope:** database, auth/admin UI, cart/checkout/payments, user accounts, filter/sort/pagination UI, native mobile app, deployed infrastructure, CAPTCHA, i18n. These are documented as cuts or next steps (§8, §13), not built.
 
 ---
 
@@ -72,19 +73,21 @@ The brief scores judgement, not feature count, and asks for "a small, well-reaso
 Browser
   │
   ▼
-[ web: React + Vite ] ──/api (Vite proxy)──▶ [ api: Express ]
+[ web: React SPA ] ──/api (same origin)──▶ [ api: Express ]
+   served by Vite (dev) or nginx (Docker)
   pages/  (fetch via hooks)                    routes/      thin HTTP + Zod validation
   components/ (props only)                     services/    CatalogService, EnquiryService
   theme.css (design tokens)                    ports/       ProductRepository, EmailProvider
                                                adapters/
                                                  FakeStoreRepository ──▶ fakestoreapi.com
-                                                   └─ TTL cache + fallback to data/products.json
-                                                 SmtpEmailProvider ────▶ Mailpit (SMTP :1025)
+                                                   ├─ TTL cache, 5 s timeout, stale/snapshot fallback
+                                                   └─ in-memory filters/sort/paging (inMemoryQuery)
+                                                 SmtpEmailProvider ────▶ Mailpit locally / SES in prod
 ```
 
 ### Boundaries
-1. **Client never calls Fake Store** (constraint 2). It only calls `/api/*` on our backend.
-2. **`ProductRepository` (port):** `getAll()`, `getById(id)`, `getCategories()`. Returns *our* `Product` model (adapter maps Fake Store's shape; `id` is a `string` so future SKUs/UUIDs fit).
+1. **Client never calls Fake Store** (constraint 2). It only calls `/api/*` on our backend. The API is served on the **same origin** as the frontend (Vite proxy locally, CloudFront `/api/*` routing in production), so no CORS is configured: browsers block other sites from calling it by default.
+2. **`ProductRepository` (port):** `find(query)` (filters, search, sort, pagination → `Page<Product>`), `getById(id)`, `getByIds(ids)`, `getCategories()`. Fake Store has no query support, so `FakeStoreRepository` applies the query in memory (`inMemoryQuery.ts`); a database adapter would do it in SQL. Returns *our* `Product` model (adapter maps Fake Store's shape; `id` is a `string` so future SKUs/UUIDs fit).
 3. **`EmailProvider` (port):** `send({ to, replyTo, subject, text, html })`.
 4. **Single wiring point:** `createApp({ productRepo, emailProvider, config })` in `app.ts`; `server.ts` passes real adapters, tests pass fakes. Swapping a data source or email provider = new adapter file + one line.
 5. **Frontend:** pages own data fetching (`useProducts`, `useEnquiry`); components (`ProductCard`, `ProductGrid`, `SearchBar`, `EnquiryForm`) are props-only. Colours, fonts, and spacing live in `theme.css` as CSS variables.
@@ -95,36 +98,39 @@ Browser
 
 ```text
 <repo root>/
-├── README.md                 # Stack choice + why, <10 min setup, config, how to test
-├── DECISIONS.md              # Assumptions, cuts, growth path, next day
-├── AI_USAGE.md               # Tools/models, agent files, plan, key prompts, AI mistakes
-├── AGENTS.md                 # Agent instruction file (committed)
+├── README.md                 # Stack choice + why, run in <10 min, config, tests
+├── DECISIONS.md              # Architecture decisions, assumptions, cuts, growth path, next steps
+├── AI_USAGE.md               # Tools/models, agent files, plan, key prompts, AI mistakes, time
+├── AGENTS.md                 # Agent instruction file
 ├── CLAUDE.md                 # Points Claude Code at AGENTS.md
 ├── docs/PLAN.md              # This plan + spec
-├── docker-compose.yml        # web + api + mailpit
-├── .env.example              # All config, no secrets
+├── docker-compose.yml        # api + web + mailpit
+├── .env.example              # All config with defaults, no secrets
 ├── backend/
-│   ├── Dockerfile
-│   ├── data/products.json    # Fake Store snapshot (fallback + test fixture)
+│   ├── Dockerfile            # Multi-stage, non-root, production deps only
+│   ├── data/products.json    # Fake Store snapshot (fallback when the API is down)
 │   └── src/
-│       ├── server.ts         # Composition: real adapters → createApp → listen
-│       ├── app.ts            # createApp(deps): routes, error middleware
-│       ├── config.ts         # Env parsing (Zod)
-│       ├── domain/           # Product, Category, Enquiry types
+│       ├── server.ts         # Composition root: real adapters → createApp → listen
+│       ├── app.ts            # createApp(deps): middleware, routes, error handler
+│       ├── config.ts         # Env parsing + validation (Zod)
+│       ├── domain/           # product.ts, productQuery.ts (filters/sort/paging), enquiry.ts (schema), errors.ts
 │       ├── ports/            # ProductRepository.ts, EmailProvider.ts
-│       ├── adapters/         # FakeStoreRepository.ts, SmtpEmailProvider.ts
+│       ├── adapters/         # FakeStoreRepository.ts, inMemoryQuery.ts, SmtpEmailProvider.ts
 │       ├── services/         # CatalogService.ts, EnquiryService.ts
-│       ├── routes/           # products.ts, categories.ts, enquiries.ts
+│       ├── routes/           # products.ts, categories.ts, enquiries.ts (rate limited), listQuery.ts
 │       ├── middleware/       # errorHandler.ts
-│       └── __tests__/
+│       └── __tests__/        # Vitest + Supertest, offline (fakes.ts)
 └── frontend/
-    ├── Dockerfile
+    ├── Dockerfile            # Vite build → nginx
+    ├── nginx.conf            # Serves the SPA, proxies /api to the API (same origin)
     └── src/
-        ├── api/client.ts     # Typed fetch wrapper + API DTO types
-        ├── hooks/            # useProducts, useEnquiry
-        ├── components/       # ProductCard, ProductGrid, SearchBar, EnquiryForm, Header
-        ├── pages/            # Home, Category, Search, ProductDetail, NotFound
-        └── theme.css         # Design tokens (CSS variables)
+        ├── api/client.ts     # Typed fetch wrapper + API types; the only module that knows API paths
+        ├── hooks/            # useApi (abortable), useProducts, useEnquiry
+        ├── components/       # Props-only: Header, SearchBar, ProductCard, ProductGrid, ProductDetails, EnquiryForm, Rating, Status
+        ├── pages/            # Home, Category, Search, ProductDetail (+ enquiry), NotFound; ProductDetailPage.test.tsx
+        ├── theme.css         # Design tokens (CSS variables)
+        ├── styles.css        # Layout/component styles using only tokens
+        └── format.ts, scroll.ts
 ```
 
 ---
@@ -134,11 +140,13 @@ Browser
 | Method | Endpoint | Behaviour |
 | :--- | :--- | :--- |
 | `GET` | `/api/products/featured` | The 5 products listed in `FEATURED_PRODUCT_IDS`, in configured order. Unknown IDs skipped with a log warning. *(Registered before `/:id`.)* |
-| `GET` | `/api/products?q=term` | Case-insensitive substring match on title, description, category. `q` trimmed; empty/missing `q` → `400`. |
+| `GET` | `/api/products?q=term` | Case-insensitive substring match on title, description, category. `q` trimmed; empty/missing `q` → `400`. Accepts the list options below. Returns `Page<Product>` = `{ items, page, pageSize, totalItems, totalPages }`. |
 | `GET` | `/api/products/:id` | Product details. Invalid id → `400`; not found → `404`. |
 | `GET` | `/api/categories` | `[{ slug, name }]`, e.g. `{ slug: "mens-clothing", name: "men's clothing" }`. |
-| `GET` | `/api/categories/:slug` | `{ category, topRated: Product[], additional: Product[] }`. Unknown slug → `404`. |
-| `POST` | `/api/enquiries` | Body `{ productId, name, email, phone?, message? }` validated by Zod. Unknown product → `404`. Sends email to `SALES_INBOX_EMAIL`. Success → `202`; validation → `400`; email failure → `502`. |
+| `GET` | `/api/categories/:slug` | `{ category, topRated: Product[], additional: Page<Product> }`. Accepts the list options below: filters narrow both lists; sort and pagination apply to `additional`. Unknown slug → `404`. |
+| `POST` | `/api/enquiries` | Body `{ productId, name, email, phone?, message?, website? }` validated by Zod (`website` is a hidden honeypot: if filled, the API answers `202` but sends nothing). Unknown product → `404`. Sends email to `SALES_INBOX_EMAIL`. Success → `202`; validation → `400`; more than 5 per client IP per 15 min → `429`; email failure → `502` (SMTP times out after 10 s). |
+
+**List options** (query string, validated with Zod; invalid → `400`): `page` (≥ 1, default 1), `pageSize` (1–100, default 24), `sort` (`rating` | `price-asc` | `price-desc`), `minPrice`, `maxPrice` (≥ 0, `minPrice ≤ maxPrice`), `minRating` (0–5). The current UI doesn't use them yet; they exist so filter/sort/pagination controls can be added without backend changes.
 
 Errors use one shape: `{ error: { code, message } }` from a central error middleware. No stack traces leak to clients.
 
@@ -146,13 +154,13 @@ Errors use one shape: `{ error: { code, message } }` from a central error middle
 
 ## 5. Acceptance Criteria → Implementation
 
-| AC | How it is met |
-| :--- | :--- |
-| **Home:** given I have chosen 5 "top rated" products, I see those 5 featured products | Owner's choice = `FEATURED_PRODUCT_IDS` (default in `.env.example`). Home page calls `/api/products/featured`, renders 5 `ProductCard`s. |
-| **Category:** click category link → top rated + additional products | Category links in `Header` on every page (from `/api/categories`). Category page shows "Top rated" (top 3 by `rating.rate`) and "More in this category" (the rest). |
-| **Search:** enter term, click search → only matching products | `SearchBar` submits on button click / Enter → navigates to `/search?q=term` → `/api/products?q=term`. Empty results show "No products match 'term'". |
-| **Product page:** click product tile → details page | `ProductCard` links to `/products/:id` → `/api/products/:id`. Not found → `NotFound` page. |
-| **Enquiry:** Enquire → contact form → submit → sales inbox gets email + customer sees "Thank you" | "Enquire" button on product page opens `EnquiryForm`. On `202`, the form is replaced by a "Thank you" message. Email visible in Mailpit at `localhost:8025`. On error, the message is shown and the form keeps its values. |
+| AC | How it is met | Verified by |
+| :--- | :--- | :--- |
+| **Home:** given I have chosen 5 "top rated" products, I see those 5 featured products | Owner's choice = `FEATURED_PRODUCT_IDS` (default in `.env.example`). Home page calls `/api/products/featured`, renders 5 `ProductCard`s. | `CatalogService.test.ts` › *returns the chosen products in the configured order*, *skips unknown ids*; `api.test.ts` › *returns the configured featured products* |
+| **Category:** click category link → top rated + additional products | Category links in `Header` on every page (from `/api/categories`). Category page shows "Top rated" (up to `TOP_RATED_COUNT` products rated ≥ `TOP_RATED_MIN_RATING`, highest first; defaults 3 and 3.0) and "More in this category" (the rest). | `CatalogService.test.ts` › *splits a category into the top rated…*, *only counts products at or above the minimum…*, *returns an empty topRated list…*; `api.test.ts` › *lists categories with slugs*, *returns top rated and additional products*, *404 for an unknown category* |
+| **Search:** enter term, click search → only matching products | `SearchBar` submits on button click / Enter → navigates to `/search?q=term` → `/api/products?q=term`. Empty results show "No products match 'term'". | `CatalogService.test.ts` › *matches the title case-insensitively*, *matches the description and category*, *trims the term…*, *rejects an empty term*; `api.test.ts` › *returns only matching products*, *400 when the term is missing or blank*. Search-on-click UI: manual check. |
+| **Product page:** click product tile → details page | `ProductCard` links to `/products/:id` → `/api/products/:id`. Not found → `NotFound` page. | `api.test.ts` › *returns the product*, *404 for an unknown product and 400 for an invalid id*; `ProductDetailPage.test.tsx` › *shows product details…*, *shows a not-found message* |
+| **Enquiry:** Enquire → contact form → submit → sales inbox gets email + customer sees "Thank you" | "Enquire" button on product page opens `EnquiryForm`. On `202`, the form is replaced by a "Thank you" message. Email visible in Mailpit at `localhost:8025`. On error, the message is shown and the form keeps its values. | `ProductDetailPage.test.tsx` › *…sends the enquiry and thanks the customer*, *shows the error and keeps the form values*; `api.test.ts` › *emails the sales inbox and returns 202*, *502 when the email provider fails*; `EnquiryService.test.ts` › *addresses the sales inbox, replies to the customer…*. Real delivery: manual check in Mailpit via Docker. |
 
 ---
 
@@ -163,40 +171,34 @@ Errors use one shape: `{ error: { code, message } }` from a central error middle
 | 1 | One client + one backend, choice and why in README | React (TS) + Node (TS); rationale in README (§1). |
 | 2 | No Fake Store calls from client | Only `FakeStoreRepository` in the backend talks to Fake Store. |
 | 3 | Infra compatible with AWS | Plain Docker images → ECS/App Runner; SMTP → SES; repository → RDS. |
-| 4 | Run locally in <10 min, 1–2 commands | `cp .env.example .env && docker compose up --build`. A non-Docker fallback (`npm install && npm run dev` per app) is also documented. |
+| 4 | Run locally in <10 min, 1–2 commands | `docker compose up --build` (one command; compose reads `.env.example` for defaults and `.env` for optional overrides). App on `:8080` (API through nginx at `:8080/api`), Mailpit inbox on `:8025`. A non-Docker fallback (`npm install && npm run dev` per app) is also documented. |
 | 5 | No secrets committed | `.env` gitignored; `.env.example` only. |
 | 6 | No paid services / reviewer accounts | Fake Store (public) + Mailpit (local). Snapshot fallback if Fake Store is unreachable. |
 
 ### `.env.example`
+Defaults work for a local (`npm run dev`) run. `docker-compose.yml` reads the same file and overrides what differs inside containers (`SMTP_HOST=mailpit`, `PORT=3000`, `TRUST_PROXY=1`). In Docker, nginx (not Vite) serves the frontend and proxies `/api`.
 ```
 PORT=3000
+TRUST_PROXY=0                            # reverse proxies in front of the API (1 in Docker)
 FAKESTORE_BASE_URL=https://fakestoreapi.com
 CACHE_TTL_SECONDS=300
 FEATURED_PRODUCT_IDS=1,5,9,13,17
-SMTP_HOST=mailpit
+TOP_RATED_COUNT=3
+TOP_RATED_MIN_RATING=3
+SMTP_HOST=localhost
 SMTP_PORT=1025
 SMTP_FROM=catalogue@example.com
+SMTP_USER=                               # optional: credentials for relays that need them (e.g. SES SMTP)
+SMTP_PASS=                               # set both or neither; TLS is then required
 SALES_INBOX_EMAIL=sales@example.com
+API_PROXY_TARGET=http://localhost:3000   # frontend: where Vite proxies /api
 ```
 
 ---
 
 ## 7. Assumptions (→ DECISIONS.md)
 
-| Gap in the acceptance criteria | Assumption |
-| :--- | :--- |
-| How the owner "chooses" the 5 featured products | Config (`FEATURED_PRODUCT_IDS`). No admin UI in the PoC. Becomes a `featured` flag in the DB later. |
-| Meaning of "top rated" on the category page | Top 3 products in the category by `rating.rate` (never empty, unlike a fixed threshold); the rest are "additional". |
-| What "text matching the search term" means | Case-insensitive substring on title, description, category; term trimmed. |
-| When search runs | On button click / Enter (per the AC), not live as you type. Query in the URL so results can be shared or reloaded. |
-| Where category links live | Header navigation, visible on every page; URL-safe slugs. |
-| "Contact details" in the enquiry form | Name + email required; phone and message optional. |
-| What the sales email contains | Product title, id, price, customer details; `Reply-To` = customer email (`From` stays a system address for SPF/DMARC). |
-| Email delivery failure | Customer sees an error and can retry; "Thank you" only after the email is sent. |
-| Enquiry persistence | Not stored; email is the system of record for the PoC. |
-| Fake Store unavailable | Backend serves the committed snapshot so the PoC stays usable. |
-| Look and feel | Neutral, accessible default styling; real branding replaces `theme.css` + components. |
-| Platform | Web only (desktop + basic responsive). No native mobile app. |
+The planned assumptions were carried into `DECISIONS.md`, which is the maintained record: each assumption has its reasoning, what depends on it, and how to confirm or change it. Interpretations of clear criteria and design choices are listed there separately, so they are not mistaken for open questions.
 
 ---
 
@@ -205,19 +207,18 @@ SALES_INBOX_EMAIL=sales@example.com
 | Cut | Why it's acceptable now | When to revisit |
 | :--- | :--- | :--- |
 | No database | Fake Store is allowed; keeps setup zero-config. | Real catalogue / enquiry history. |
-| Filtering in `CatalogService` (in memory) | 20 products; keeps the port tiny. | DB adapter: push `q`/category filters into the port. |
+| Filter / sort / pagination **UI** on category and search pages | The backend and API support them (see §4), but with 4–6 products per category the controls would add nothing. | Real catalogue size: add the controls; no backend change. |
 | No shared types package | Avoids workspace + Docker build complexity; frontend keeps its own API DTOs. | Generate client types from an OpenAPI spec. |
 | No auth / admin UI | Not in the ACs. | Owner needs to manage featured products. |
-| No rate limiting / CAPTCHA on enquiries | Local PoC. | Before public launch. |
-| No pagination | 20 products. | Real catalogue size. |
-| Minimal frontend tests | Critical path covered by backend tests in the time-box. | Add RTL + Playwright e2e. |
+| No CAPTCHA on enquiries | Needs a third-party account (constraint 6); rate limit + honeypot cover casual abuse. | If spam gets through after launch. |
+| Minimal frontend tests | Time-box. One RTL file covers the enquiry critical path; other pages rely on backend tests and manual checks. | Add page tests + Playwright e2e. |
 
 ---
 
 ## 9. How the Design Grows Beyond the PoC (→ DECISIONS.md)
 
 * **New data source:** implement `ProductRepository` (e.g. `PostgresProductRepository`), wire it in `server.ts`. Routes, services, frontend unchanged.
-* **New email provider:** implement `EmailProvider` (e.g. `SesEmailProvider`) or point SMTP config at SES. `EnquiryService` unchanged.
+* **New email provider:** point the SMTP settings at SES (`SMTP_HOST`, `SMTP_PORT=587`, `SMTP_USER`/`SMTP_PASS`), or implement `EmailProvider` (e.g. `SesEmailProvider` on the SES API). `EnquiryService` unchanged.
 * **Rebrand:** replace `theme.css` and presentational components. Hooks, API client, backend unchanged.
 * **AWS deployment:** `api` container → ECS Fargate / App Runner; `web` build → S3 + CloudFront; SES for email; RDS for products/enquiries; secrets in SSM / Secrets Manager.
 * **Mobile client later:** the backend is a client-agnostic JSON API, so an iOS/Android app can reuse it as is.
@@ -226,17 +227,39 @@ SALES_INBOX_EMAIL=sales@example.com
 
 ## 10. Testing Strategy (critical path, confidence to change)
 
-| Test | Type | Covers |
+| Test file | Type | Covers |
 | :--- | :--- | :--- |
-| `CatalogService.featured` | Unit (fake repo) | Configured order, unknown IDs skipped. |
-| `CatalogService.byCategory` | Unit | Top 3 / additional split, unknown slug. |
-| `CatalogService.search` | Unit | Case-insensitivity, title/description/category match, no false positives. |
-| `GET /api/products/:id` | Supertest | 200, 400 (bad id), 404. |
-| `POST /api/enquiries` | Supertest (fake email provider) | 202 + email called with correct `to`/`replyTo`/product; 400 invalid body; 404 unknown product; 502 provider failure. |
-| `FakeStoreRepository` | Unit (mocked fetch) | Maps to domain model; falls back to snapshot on failure. |
-| *(Stretch)* `EnquiryForm` | RTL | Submit → "Thank you"; error keeps form values. |
+| `CatalogService.test.ts` | Unit (fake repo) | Featured order and unknown ids; top-rated rule (min rating + max count, empty case); filters/sort/pagination on category and search; case-insensitive search on title/description/category; not found. |
+| `inMemoryQuery.test.ts` | Unit | Every filter, sort order, pagination and totals of the in-memory query used by the Fake Store adapter. |
+| `FakeStoreRepository.test.ts` | Unit (mocked fetch) | Mapping to the domain model, slugs, TTL cache, one shared request for concurrent callers, 30 s back-off after a failure, stale-cache and snapshot fallback, invalid upstream response, in-memory querying, `getByIds`. |
+| `SmtpEmailProvider.test.ts` | Unit | Transport settings: no credentials for Mailpit; credentials + required TLS when configured (SES on 587); implicit TLS on 465. |
+| `EnquiryService.test.ts` | Unit | Email to/reply-to/subject/content; HTML escaping of customer input. |
+| `api.test.ts` | Supertest (fakes via `createApp`) | Every endpoint: 200/400/404, list options and validation, enquiry 202/400/404/502, header-injection rejection, honeypot, rate limit (429, per client behind a proxy), malformed JSON, unknown routes. |
+| `config.test.ts` | Unit | Defaults, readable errors naming the bad variable, SMTP credentials set together or not at all. |
+| `ProductDetailPage.test.tsx` (frontend) | React Testing Library | Details → Enquire → "Thank you" with the right request body; error keeps values; close/reopen clears the error; form scrolls into view and focuses its heading; not found. |
 
-All backend tests use `createApp(deps)` with fakes, so no network is needed and the tests are deterministic.
+Totals: backend 64 tests, frontend 5 tests. All backend tests use `createApp(deps)` with fakes, so no network is needed and the tests are deterministic. Which tests prove each acceptance criterion is in §5.
+
+### Edge cases and failure scenarios
+
+| Scenario | Expected behaviour | Verified by |
+| :--- | :--- | :--- |
+| Fake Store down, nothing cached | Committed snapshot served; app keeps working | `FakeStoreRepository.test.ts` |
+| Fake Store down after a successful load | Stale cache served; no new upstream call for 30 s | `FakeStoreRepository.test.ts` |
+| Fake Store returns an unexpected shape | Treated as a failure (fallback), never reaches the UI | `FakeStoreRepository.test.ts` |
+| Many requests while the cache is empty | One upstream request shared by all | `FakeStoreRepository.test.ts` |
+| Featured id no longer exists upstream | Skipped with a warning; the rest still shown | `CatalogService.test.ts` |
+| No product in a category meets the minimum rating | Empty top-rated list (the page shows a message); all products under "More" | `CatalogService.test.ts` |
+| Blank or missing search term | `400`; nothing searched | `api.test.ts`, `CatalogService.test.ts` |
+| Malformed product id / unknown product / unknown category | `400` / `404` / `404` in the standard error shape | `api.test.ts` |
+| Invalid list options (unknown `sort`, `page=0`, `pageSize=101`, `minPrice` > `maxPrice`) | `400` | `api.test.ts` |
+| Enquiry with invalid fields or line breaks in single-line fields | `400`; no email sent (header injection blocked) | `api.test.ts` |
+| Customer input containing HTML | Escaped in the email body | `EnquiryService.test.ts` |
+| Mail server unavailable | `502`; customer sees an error, form keeps values, can retry | `api.test.ts`, `ProductDetailPage.test.tsx` |
+| Bot fills the honeypot field | `202`, but no email sent | `api.test.ts` |
+| More than 5 enquiries from one client in 15 min | `429`; other clients behind the same proxy unaffected | `api.test.ts` |
+| Malformed JSON body / unknown route | `400` / JSON `404` | `api.test.ts` |
+| Invalid configuration at startup (incl. only one of `SMTP_USER`/`SMTP_PASS`) | Server refuses to start, naming the variable | `config.test.ts` |
 
 ---
 
@@ -248,8 +271,8 @@ All backend tests use `createApp(deps)` with fakes, so no network is needed and 
 | **2. Backend** | 45 min | Domain types, ports, `FakeStoreRepository` (cache + snapshot fallback), `SmtpEmailProvider`, services, routes, Zod, error middleware, `createApp`. |
 | **3. Backend tests** | 25 min | Tests per §10. |
 | **4. Frontend** | 40 min | `theme.css`, `api/client.ts`, hooks, Header (categories + search), Home, Category, Search, Product Detail + Enquiry form, loading/empty/error/not-found states. |
-| **5. Docker** | 10 min | Dockerfiles + `docker-compose.yml`; verify clean `docker compose up --build` from a fresh clone. |
-| **6. Review & docs** | 20 min | Review AI code against `AGENTS.md`; write README, DECISIONS.md, AI_USAGE.md, time spent. Open PR with full description. Leave it open. |
+| **5. Docker** | 10 min | Dockerfiles (multi-stage; API runs as non-root with production deps only; web = Vite build served by nginx) + `docker-compose.yml` (`api`, `web`, `mailpit`); verify `docker compose up --build` and an enquiry landing in Mailpit. |
+| **6. Review & docs** | 20 min | Review AI code against `AGENTS.md`; write README, finalise DECISIONS.md and AI_USAGE.md, record time spent. Then (owner) open the PR with a full description and leave it open. |
 
 **If running over, cut in this order:** RTL test → loading skeletons/polish → non-Docker docs. **Never cut:** ACs, backend tests, DECISIONS.md, AI_USAGE.md, PR description.
 
@@ -272,13 +295,14 @@ All backend tests use `createApp(deps)` with fakes, so no network is needed and 
 
 ## 13. With Another Day (→ DECISIONS.md)
 
-1. Postgres adapter for `ProductRepository` + migration; move filtering into the port.
-2. Store enquiries (`EnquiryRepository`) before emailing; retry/outbox for email failures.
-3. Rate limiting + honeypot/CAPTCHA on the enquiry endpoint.
-4. OpenAPI spec → generated client types.
-5. Playwright e2e for the five ACs; CI (lint, typecheck, test) on PRs.
-6. Admin view (or CMS field) for the owner to choose featured products.
-7. AWS deployment (IaC with CDK/Terraform), structured logging, health checks.
+1. Postgres adapter for `ProductRepository` + migration (translate `ProductQuery` to SQL).
+2. Filter, sort and pagination controls on category and search pages (the API already supports them).
+3. Store enquiries (`EnquiryRepository`) before emailing; retry/outbox for email failures.
+4. Production hardening of the enquiry endpoint: shared rate-limit store (Redis) or AWS WAF rate rules across instances; CAPTCHA if spam gets through.
+5. OpenAPI spec → generated client types.
+6. Playwright e2e for the five ACs; CI (lint, typecheck, test) on PRs.
+7. Admin view (or CMS field) for the owner to choose featured products.
+8. AWS deployment (IaC with CDK/Terraform), structured logging, health checks.
 
 ---
 
