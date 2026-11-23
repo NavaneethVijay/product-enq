@@ -1,0 +1,86 @@
+/*
+ * Design tokens. The upcoming brand work replaces the values here;
+ * components only reference these variables, never raw colours or sizes.
+ *
+ * Current look: neutral, minimal, near-monochrome with one warm accent.
+ */
+:root {
+  /* Colour */
+  --color-bg: #fafaf9;
+  --color-header-bg: rgb(250 250 249 / 0.85); /* translucent --color-bg for the sticky header */
+  --color-surface: #ffffff;
+  --color-surface-muted: #f4f4f3;
+  --color-text: #18181b;
+  --color-text-muted: #71717a;
+  --color-border: #e7e5e4;
+  --color-border-strong: #d6d3d1;
+  --color-primary: #18181b;
+  --color-primary-hover: #3f3f46;
+  --color-primary-contrast: #ffffff;
+  --color-accent: #d97706;
+  --color-danger: #b42318;
+  --color-danger-bg: #fef3f2;
+  --color-success: #166534;
+  --color-success-bg: #f0fdf4;
+
+  /* Typography */
+  --font-body: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-size-xs: 0.75rem;
+  --font-size-sm: 0.875rem;
+  --font-size-md: 1rem;
+  --font-size-lg: 1.25rem;
+  --font-size-xl: 2rem;
+  --letter-spacing-tight: -0.02em;
+  --letter-spacing-wide: 0.08em;
+
+  /* Spacing */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 1rem;
+  --space-4: 1.5rem;
+  --space-5: 2.5rem;
+  --space-6: 4rem;
+
+  /* Shape & depth */
+  --radius-sm: 8px;
+  --radius: 14px;
+  --radius-pill: 999px;
+  --shadow-sm: 0 1px 2px rgb(24 24 27 / 0.05);
+  --shadow-md: 0 10px 30px -12px rgb(24 24 27 / 0.18);
+  --transition: 160ms ease;
+
+  --content-width: 1200px;
+  /* Space kept clear under the sticky header when scrolling an element into view. */
+  --header-offset: 140px;
+}
+
+@media (max-width: 760px) {
+  :root {
+    --header-offset: 200px; /* header wraps onto more rows on small screens */
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-body);
+  font-size: var(--font-size-md);
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+a {
+  color: inherit;
+}
+
+img {
+  max-width: 100%;
+  display: block;
+}

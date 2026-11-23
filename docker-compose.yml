@@ -1,0 +1,35 @@
+# One command: docker compose up --build
+#   App:           http://localhost:8080
+#   Sales inbox:   http://localhost:8025  (Mailpit catches every email; nothing is really sent)
+# The API is reached only through nginx (/api on :8080). It is not published directly, because it
+# trusts nginx's X-Forwarded-For for the per-client enquiry rate limit.
+services:
+  api:
+    build: ./backend
+    env_file:
+      - path: .env.example     # defaults, so it runs without creating .env
+      - path: .env             # your overrides, if present
+        required: false
+    environment:
+      PORT: "3000"
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      TRUST_PROXY: "1"         # nginx sits in front of the API
+    depends_on:
+      - mailpit
+    restart: unless-stopped
+
+  web:
+    build: ./frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  mailpit:
+    image: axllent/mailpit:v1.34.0
+    ports:
+      - "8025:8025"            # inbox web UI
+      - "1025:1025"            # SMTP (also lets `npm run dev` send to it)
+    restart: unless-stopped
